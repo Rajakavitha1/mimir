@@ -870,7 +870,7 @@ func (i *Ingester) updateMetrics() {
 // GetRef() is an extra method added to TSDB to let Mimir check before calling Add()
 type extendedAppender interface {
 	storage.Appender
-	storage.GetRef
+	storage.GetRefFunc
 }
 
 type pushStats struct {
@@ -1193,8 +1193,8 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 		maxTimestampMs                   = startAppend.Add(i.limits.CreationGracePeriod(userID)).UnixMilli()
 	)
 
-	builder := labels.NewScratchBuilder(0)
-	var nonCopiedLabels labels.Labels
+	var symbolTable *labels.SymbolTable
+	builder := labels.NewScratchBuilderWithSymbolTable(nil, 0)
 	for _, ts := range timeseries {
 		// The labels must be sorted (in our case, it's guaranteed a write request
 		// has sorted labels once hit the ingester).
@@ -1242,12 +1242,11 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 			}
 		}
 
-		// MUST BE COPIED before being retained.
-		mimirpb.FromLabelAdaptersOverwriteLabels(&builder, ts.Labels, &nonCopiedLabels)
-		hash := nonCopiedLabels.Hash()
+		mimirpb.FromLabelAdaptersToScratchBuilder(ts.Labels, &builder)
+		hash := builder.Hash()
 		// Look up a reference for this series. The hash passed should be the output of Labels.Hash()
 		// and NOT the stable hashing because we use the stable hashing in ingesters only for query sharding.
-		ref, copiedLabels := app.GetRef(nonCopiedLabels, hash)
+		ref, copiedLabels := app.GetRefFunc(hash, builder.Equal)
 
 		// To find out if any sample was added to this series, we keep old value.
 		oldSucceededSamplesCount := stats.succeededSamplesCount
@@ -1268,8 +1267,11 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 					continue
 				}
 			} else {
-				// Copy the label set because both TSDB and the active series tracker may retain it.
-				copiedLabels = mimirpb.CopyLabels(nonCopiedLabels)
+				if symbolTable == nil {
+					symbolTable = labels.NewSymbolTable()
+					builder.SetSymbolTable(symbolTable)
+				}
+				copiedLabels = builder.Labels()
 
 				// Retain the reference in case there are multiple samples for the series.
 				if ref, err = app.Append(0, copiedLabels, s.TimestampMs, s.Value); err == nil {
@@ -1314,8 +1316,11 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 						continue
 					}
 				} else {
-					// Copy the label set because both TSDB and the active series tracker may retain it.
-					copiedLabels = mimirpb.CopyLabels(nonCopiedLabels)
+					if symbolTable == nil {
+						symbolTable = labels.NewSymbolTable()
+						builder.SetSymbolTable(symbolTable)
+					}
+					copiedLabels = builder.Labels()
 
 					// Retain the reference in case there are multiple samples for the series.
 					if ref, err = app.AppendHistogram(0, copiedLabels, h.Timestamp, ih, fh); err == nil {
@@ -1347,7 +1352,7 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 		}
 
 		if activeSeries != nil && stats.succeededSamplesCount > oldSucceededSamplesCount {
-			activeSeries.UpdateSeries(nonCopiedLabels, ref, startAppend, numNativeHistogramBuckets)
+			activeSeries.UpdateSeries(copiedLabels, ref, startAppend, numNativeHistogramBuckets)
 		}
 
 		if len(ts.Exemplars) > 0 && i.limits.MaxGlobalExemplarsPerUser(userID) > 0 {
