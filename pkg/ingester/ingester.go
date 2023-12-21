@@ -1031,7 +1031,7 @@ func (i *Ingester) PushWithCleanup(ctx context.Context, req *mimirpb.WriteReques
 
 	minAppendTime, minAppendTimeAvailable := db.Head().AppendableMinValidTime()
 
-	err = i.pushSamplesToAppender(userID, req.Timeseries, app, startAppend, &stats, updateFirstPartial, activeSeries, i.limits.OutOfOrderTimeWindow(userID), minAppendTimeAvailable, minAppendTime)
+	err = i.pushSamplesToAppender(userID, db.symbolTable.Load(), req.Timeseries, app, startAppend, &stats, updateFirstPartial, activeSeries, i.limits.OutOfOrderTimeWindow(userID), minAppendTimeAvailable, minAppendTime)
 	if err != nil {
 		if err := app.Rollback(); err != nil {
 			level.Warn(i.logger).Log("msg", "failed to rollback appender on error", "user", userID, "err", err)
@@ -1122,7 +1122,7 @@ func (i *Ingester) updateMetricsFromPushStats(userID string, group string, stats
 // pushSamplesToAppender appends samples and exemplars to the appender. Most errors are handled via updateFirstPartial function,
 // but in case of unhandled errors, appender is rolled back and such error is returned. Errors handled by updateFirstPartial
 // must be of type softError.
-func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.PreallocTimeseries, app extendedAppender, startAppend time.Time,
+func (i *Ingester) pushSamplesToAppender(userID string, st *labels.SymbolTable, timeseries []mimirpb.PreallocTimeseries, app extendedAppender, startAppend time.Time,
 	stats *pushStats, updateFirstPartial func(sampler *util_log.Sampler, errFn softErrorFunction), activeSeries *activeseries.ActiveSeries,
 	outOfOrderWindow time.Duration, minAppendTimeAvailable bool, minAppendTime int64) error {
 
@@ -1193,8 +1193,7 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 		maxTimestampMs                   = startAppend.Add(i.limits.CreationGracePeriod(userID)).UnixMilli()
 	)
 
-	var symbolTable *labels.SymbolTable
-	builder := labels.NewScratchBuilderWithSymbolTable(nil, 0)
+	builder := labels.NewScratchBuilderWithSymbolTable(st, 0)
 	for _, ts := range timeseries {
 		// The labels must be sorted (in our case, it's guaranteed a write request
 		// has sorted labels once hit the ingester).
@@ -1267,10 +1266,6 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 					continue
 				}
 			} else {
-				if symbolTable == nil {
-					symbolTable = labels.NewSymbolTable()
-					builder.SetSymbolTable(symbolTable)
-				}
 				copiedLabels = builder.Labels()
 
 				// Retain the reference in case there are multiple samples for the series.
@@ -1316,10 +1311,6 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 						continue
 					}
 				} else {
-					if symbolTable == nil {
-						symbolTable = labels.NewSymbolTable()
-						builder.SetSymbolTable(symbolTable)
-					}
 					copiedLabels = builder.Labels()
 
 					// Retain the reference in case there are multiple samples for the series.
@@ -1377,7 +1368,7 @@ func (i *Ingester) pushSamplesToAppender(userID string, timeseries []mimirpb.Pre
 						Value:  ex.Value,
 						Ts:     ex.TimestampMs,
 						HasTs:  true,
-						Labels: mimirpb.FromLabelAdaptersToLabelsWithCopy(ex.Labels),
+						Labels: mimirpb.FromLabelAdaptersToLabelsWithCopy(st, ex.Labels),
 					}
 
 					var err error
@@ -2415,6 +2406,7 @@ func (i *Ingester) createTSDB(userID string, walReplayConcurrency int) (*userTSD
 		useOwnedSeriesForLimits: i.cfg.UseIngesterOwnedSeriesForLimits,
 		ownedSeriesShardSize:    i.limits.IngestionTenantShardSize(userID), // initialize series shard size so that it's correct even before we update ownedSeries for the first time (during WAL replay).
 	}
+	userDB.resetSymbolTable()
 	userDB.triggerRecomputeOwnedSeries(recomputeOwnedSeriesReasonNewUser)
 
 	maxExemplars := i.limiter.convertGlobalToLocalLimit(i.limits.IngestionTenantShardSize(userID), i.limits.MaxGlobalExemplarsPerUser(userID))
@@ -2908,6 +2900,7 @@ func (i *Ingester) compactBlocks(ctx context.Context, force bool, forcedCompacti
 		default:
 			reason = "regular"
 			err = userDB.Compact()
+			userDB.resetSymbolTable()
 		}
 
 		if err != nil {
