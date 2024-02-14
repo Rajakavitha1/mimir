@@ -61,8 +61,8 @@ func (l *Limiter) IsWithinMaxMetadataPerMetric(userID string, metadata int) bool
 
 // IsWithinMaxSeriesPerUser returns true if limit has not been reached compared to the current
 // number of series in input; otherwise returns false.
-func (l *Limiter) IsWithinMaxSeriesPerUser(userID string, series int, userShardSize int) bool {
-	actualLimit := l.maxSeriesPerUser(userID, userShardSize)
+func (l *Limiter) IsWithinMaxSeriesPerUser(userID string, series int, minLocalLimit int) bool {
+	actualLimit := l.maxSeriesPerUser(userID, minLocalLimit)
 	return series < actualLimit
 }
 
@@ -74,25 +74,25 @@ func (l *Limiter) IsWithinMaxMetricsWithMetadataPerUser(userID string, metrics i
 }
 
 func (l *Limiter) maxSeriesPerMetric(userID string) int {
-	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.getShardSize(userID), l.limits.MaxGlobalSeriesPerMetric)
+	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.limits.MaxGlobalSeriesPerMetric, 0)
 }
 
 func (l *Limiter) maxMetadataPerMetric(userID string) int {
-	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.getShardSize(userID), l.limits.MaxGlobalMetadataPerMetric)
+	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.limits.MaxGlobalMetadataPerMetric, 0)
 }
 
-func (l *Limiter) maxSeriesPerUser(userID string, userShardSize int) int {
-	return l.convertGlobalToLocalLimitOrUnlimited(userID, userShardSize, l.limits.MaxGlobalSeriesPerUser)
+func (l *Limiter) maxSeriesPerUser(userID string, minLocalLimit int) int {
+	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.limits.MaxGlobalSeriesPerUser, minLocalLimit)
 }
 
 func (l *Limiter) maxMetadataPerUser(userID string) int {
-	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.getShardSize(userID), l.limits.MaxGlobalMetricsWithMetadataPerUser)
+	return l.convertGlobalToLocalLimitOrUnlimited(userID, l.limits.MaxGlobalMetricsWithMetadataPerUser, 0)
 }
 
-func (l *Limiter) convertGlobalToLocalLimitOrUnlimited(userID string, userShardSize int, globalLimitFn func(string) int) int {
+func (l *Limiter) convertGlobalToLocalLimitOrUnlimited(userID string, globalLimitFn func(string) int, minLocalLimit int) int {
 	// We can assume that series/metadata are evenly distributed across ingesters
 	globalLimit := globalLimitFn(userID)
-	localLimit := l.convertGlobalToLocalLimit(userShardSize, globalLimit)
+	localLimit := l.convertGlobalToLocalLimit(userID, globalLimit, minLocalLimit)
 
 	// If the limit is disabled
 	if localLimit == 0 {
@@ -102,10 +102,12 @@ func (l *Limiter) convertGlobalToLocalLimitOrUnlimited(userID string, userShardS
 	return localLimit
 }
 
-func (l *Limiter) convertGlobalToLocalLimit(userShardSize int, globalLimit int) int {
+func (l *Limiter) convertGlobalToLocalLimit(userID string, globalLimit int, minLocalLimit int) int {
 	if globalLimit == 0 {
 		return 0
 	}
+
+	userShardSize := l.getShardSize(userID)
 
 	zonesCount := l.getZonesCount()
 	var ingestersInZoneCount int
@@ -135,7 +137,7 @@ func (l *Limiter) convertGlobalToLocalLimit(userShardSize int, globalLimit int) 
 	// Global limit is equally distributed among all the active zones.
 	// The portion of global limit related to each zone is then equally distributed
 	// among all the ingesters belonging to that zone.
-	return int((float64(globalLimit*l.replicationFactor) / float64(zonesCount)) / float64(ingestersInZoneCount))
+	return max(int((float64(globalLimit*l.replicationFactor)/float64(zonesCount))/float64(ingestersInZoneCount)), minLocalLimit)
 }
 
 func (l *Limiter) getShardSize(userID string) int {

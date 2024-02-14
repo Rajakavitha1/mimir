@@ -46,7 +46,7 @@ func TestLimiter_maxSeriesPerUser(t *testing.T) {
 	}
 
 	runMaxFn := func(limiter *Limiter) int {
-		return limiter.maxSeriesPerUser("test", limiter.getShardSize("test"))
+		return limiter.maxSeriesPerUser("test", 0)
 	}
 
 	runLimiterMaxFunctionTest(t, applyLimits, runMaxFn)
@@ -419,6 +419,7 @@ func TestLimiter_AssertMaxSeriesPerUser(t *testing.T) {
 		ringReplicationFactor  int
 		ringIngesterCount      int
 		series                 int
+		minLocalLimit          int
 		expected               bool
 	}{
 		"limit is disabled": {
@@ -435,12 +436,20 @@ func TestLimiter_AssertMaxSeriesPerUser(t *testing.T) {
 			series:                 299,
 			expected:               true,
 		},
-		"current number of series is above the limit": {
+		"current number of series is above the limit, min limit not set": {
 			maxGlobalSeriesPerUser: 1000,
 			ringReplicationFactor:  3,
 			ringIngesterCount:      10,
 			series:                 300,
 			expected:               false,
+		},
+		"current number of series is above the limit, but below min limit": {
+			maxGlobalSeriesPerUser: 1000,
+			ringReplicationFactor:  3,
+			ringIngesterCount:      10,
+			series:                 300,
+			minLocalLimit:          400,
+			expected:               true,
 		},
 	}
 
@@ -460,7 +469,7 @@ func TestLimiter_AssertMaxSeriesPerUser(t *testing.T) {
 			require.NoError(t, err)
 
 			limiter := NewLimiter(limits, ring, testData.ringReplicationFactor, false)
-			actual := limiter.IsWithinMaxSeriesPerUser("test", testData.series, limiter.getShardSize("test"))
+			actual := limiter.IsWithinMaxSeriesPerUser("test", testData.series, testData.minLocalLimit)
 
 			assert.Equal(t, testData.expected, actual)
 		})
