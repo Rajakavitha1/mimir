@@ -401,10 +401,6 @@ func New(cfg Config, limits *validation.Overrides, ingestersRing ring.ReadRing, 
 	i.subservicesWatcher = services.NewFailureWatcher()
 	i.subservicesWatcher.WatchService(i.lifecycler)
 
-	if cfg.UseIngesterOwnedSeriesForLimits || cfg.UpdateIngesterOwnedSeries {
-		i.ownedSeriesService = newOwnedSeriesService(i.cfg.OwnedSeriesUpdateInterval, i.lifecycler.ID, ingestersRing, log.With(i.logger, "component", "owned series"), registerer, i.limits.IngestionTenantShardSize, i.getTSDBUsers, i.getTSDB)
-	}
-
 	// Init the limter and instantiate the user states which depend on it
 	i.limiter = NewLimiter(
 		limits,
@@ -412,6 +408,10 @@ func New(cfg Config, limits *validation.Overrides, ingestersRing ring.ReadRing, 
 		cfg.IngesterRing.ReplicationFactor,
 		cfg.IngesterRing.ZoneAwarenessEnabled,
 	)
+
+	if cfg.UseIngesterOwnedSeriesForLimits || cfg.UpdateIngesterOwnedSeries {
+		i.ownedSeriesService = newOwnedSeriesService(i.cfg.OwnedSeriesUpdateInterval, i.lifecycler.ID, ingestersRing, log.With(i.logger, "component", "owned series"), registerer, i.limits.IngestionTenantShardSize, i.limiter.maxSeriesPerUser, i.getTSDBUsers, i.getTSDB)
+	}
 
 	if cfg.ReadPathCPUUtilizationLimit > 0 || cfg.ReadPathMemoryUtilizationLimit > 0 {
 		i.utilizationBasedLimiter = limiter.NewUtilizationBasedLimiter(cfg.ReadPathCPUUtilizationLimit,
